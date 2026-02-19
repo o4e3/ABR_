@@ -132,8 +132,12 @@ std::ostream& operator<<(std::ostream& os, const TypeHeader& h);
   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
   |                  Originator Sequence Number                   |
   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+  |                  Aggregate Tick                           |
+  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
   \endverbatim
 */
+
+// 기존 RREQ 헤더에 Aggregate Tick 필드 추가
 class RreqHeader : public Header
 {
   public:
@@ -156,7 +160,8 @@ class RreqHeader : public Header
                Ipv4Address dst = Ipv4Address(),
                uint32_t dstSeqNo = 0,
                Ipv4Address origin = Ipv4Address(),
-               uint32_t originSeqNo = 0);
+               uint32_t originSeqNo = 0,
+               uint32_t aggregateTick = 0);
 
     /**
      * \brief Get the type ID.
@@ -278,6 +283,17 @@ class RreqHeader : public Header
         return m_originSeqNo;
     }
 
+    // 추가
+    void SetAggregateTick(uint32_t tick)
+    {
+        m_aggregateTick = tick;
+    }
+
+    uint32_t GetAggregateTick() const
+    {
+        return m_aggregateTick;
+    }
+
     // Flags
     /**
      * \brief Set the gratuitous RREP flag
@@ -326,6 +342,8 @@ class RreqHeader : public Header
     uint32_t m_dstSeqNo;    ///< Destination Sequence Number
     Ipv4Address m_origin;   ///< Originator IP Address
     uint32_t m_originSeqNo; ///< Source Sequence Number
+    // 추가
+    uint32_t m_aggregateTick; ///< Aggregate Tick
 };
 
 /**
