@@ -477,6 +477,14 @@ class RoutingProtocol : public Ipv4RoutingProtocol
 
     /// Hello timer
     Timer m_htimer;
+
+    // tick 갱신 타이머
+    Timer m_assocTickTimer;
+    Time m_assocTickInterval;
+    Time m_ntExpire;
+
+    void AssocTickTimerExpire();
+
     /// Schedule next send of hello message
     void HelloTimerExpire();
     /// RREQ rate limit timer
@@ -507,10 +515,6 @@ class RoutingProtocol : public Ipv4RoutingProtocol
     /// Keep track of the last bcast time
     Time m_lastBcastTime;
 
-    // ================================
-    // DEST 후보 수집/결정 (ABR 확장)
-    // ================================
-
     // 목적지 후보 식별용 키
     struct DestKey
     {
@@ -536,6 +540,10 @@ class RoutingProtocol : public Ipv4RoutingProtocol
 
     // 타임아웃 핸들러
     void DestDecisionTimeout(DestKey key);
+
+    bool GetBestRoute(const DestKey& key, RreqHeader& best) const;
+
+    uint32_t m_atThreshold = 1; // AT threshold
 };
 
 } // namespace abr

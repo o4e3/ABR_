@@ -152,13 +152,12 @@ RoutingProtocol::RoutingProtocol()
       m_rerrRateLimit(10),
       m_activeRouteTimeout(Seconds(3)),
       m_netDiameter(35),
-      m_nodeTraversalTime(MilliSeconds(40)), // 한홉을 지나는 평균시간
-      m_netTraversalTime(
-          Time((2 * m_netDiameter) * m_nodeTraversalTime)), // 네트워크 왕복 최대 시간
-      m_pathDiscoveryTime(Time(2 * m_netTraversalTime)),    // 경로 탐색이 끝날때까지 기다리는 시간
+      m_nodeTraversalTime(MilliSeconds(40)),
+      m_netTraversalTime(Time((2 * m_netDiameter) * m_nodeTraversalTime)),
+      m_pathDiscoveryTime(Time(2 * m_netTraversalTime)),
       m_myRouteTimeout(Time(2 * std::max(m_pathDiscoveryTime, m_activeRouteTimeout))),
-      m_helloInterval(Seconds(1)), // Hello 메시지 전송 주기
-      m_allowedHelloLoss(2),       // 허용되는 Hello 메시지 손실 횟수
+      m_helloInterval(Seconds(1)),
+      m_allowedHelloLoss(2),
       m_deletePeriod(Time(5 * std::max(m_activeRouteTimeout, m_helloInterval))),
       m_nextHopWait(m_nodeTraversalTime + MilliSeconds(10)),
       m_blackListTimeout(Time(m_rreqRetries * m_netTraversalTime)),
@@ -167,6 +166,13 @@ RoutingProtocol::RoutingProtocol()
       m_destinationOnly(false),
       m_gratuitousReply(true),
       m_enableHello(false),
+      m_enableBroadcast(true),
+
+      m_ipv4(nullptr),
+      m_socketAddresses(),
+      m_socketSubnetBroadcastAddresses(),
+      m_lo(nullptr),
+
       m_routingTable(m_deletePeriod),
       m_queue(m_maxQueueLen, m_maxQueueTime),
       m_requestId(0),
@@ -176,11 +182,24 @@ RoutingProtocol::RoutingProtocol()
       m_nb(m_helloInterval),
       m_rreqCount(0),
       m_rerrCount(0),
-      m_htimer(Timer::CANCEL_ON_DESTROY),
+      m_ntable(),
+
+           m_htimer(Timer::CANCEL_ON_DESTROY),
+      m_assocTickTimer(Timer::CANCEL_ON_DESTROY),
+      m_assocTickInterval(Seconds(1.0)),
+      m_ntExpire(Seconds(2.5)),
+
       m_rreqRateLimitTimer(Timer::CANCEL_ON_DESTROY),
       m_rerrRateLimitTimer(Timer::CANCEL_ON_DESTROY),
+      m_addressReqTimer(),
+
+      m_uniformRandomVariable(CreateObject<UniformRandomVariable>()),
       m_lastBcastTime(Seconds(0)),
-      m_destDecisionDelay(MilliSeconds(30)) // 30초동안 후보 경로 수집
+
+      m_destCandidates(),
+      m_destDecisionEvent(),
+      m_destDecisionDelay(Seconds(1))
+
 {
     m_nb.SetCallback(MakeCallback(&RoutingProtocol::SendRerrWhenBreaksLinkToNextHop, this));
     // 이웃링크가 끊어지면 자동으로 RERR 전송
@@ -423,6 +442,10 @@ RoutingProtocol::Start()
 
     m_rerrRateLimitTimer.SetFunction(&RoutingProtocol::RerrRateLimitTimerExpire, this);
     m_rerrRateLimitTimer.Schedule(Seconds(1));
+
+    // tick 갱신 타이머 설정
+    m_assocTickTimer.SetFunction(&RoutingProtocol::AssocTickTimerExpire, this);
+    m_assocTickTimer.Schedule(m_assocTickInterval);
 }
 
 Ptr<Ipv4Route>
@@ -1499,17 +1522,24 @@ RoutingProtocol::RecvRequest(Ptr<Packet> p, Ipv4Address receiver, Ipv4Address sr
 
     // HELLO 기반 갱신 .. src 노드 살아있음 표시
     m_nb.Update(src, Time(m_allowedHelloLoss * m_helloInterval));
-
+    m_ntable.NoteNeighbor(src); // last Seen 갱신
     NS_LOG_LOGIC(receiver << " receive RREQ with hop count "
                           << static_cast<uint32_t>(rreqHeader.GetHopCount()) << " ID "
                           << rreqHeader.GetId() << " to destination " << rreqHeader.GetDst());
 
-    //  A node generates a RREP if either:
-    //  (i)  it is itself the destination,
     // TODO
     // rreq를 받은 노드가 목적지이면 일정시간 대기해 후보 RREQ 수집후 최적 경로 결정 후 RREP 생성
     if (isDst)
     {
+        uint32_t assocTick = m_ntable.GetAssocTick(src);
+        std::vector<NeighborTick> ticks;
+        NeighborTick nt;
+        nt.neighbor = src;
+        nt.tick = assocTick;
+        ticks.push_back(nt);
+
+        rreqHeader.AppendMetricBlock(receiver, ticks);
+
         DestKey key{origin, id};
 
         // 후보 저장
@@ -1561,11 +1591,11 @@ RoutingProtocol::RecvRequest(Ptr<Packet> p, Ipv4Address receiver, Ipv4Address sr
 
     SocketIpTtlTag tag;
     p->RemovePacketTag(tag);
-    // if (tag.GetTtl() < 2) // ttl 소진되면 forward 불가
-    // {
-    //     NS_LOG_DEBUG("TTL exceeded. Drop RREQ origin " << src << " destination " << dst);
-    //     return;
-    // }
+    if (tag.GetTtl() <= 1) // ttl 소진되면 forward 불가
+    {
+        NS_LOG_DEBUG("TTL exceeded. Drop RREQ origin " << src << " destination " << dst);
+        return;
+    }
 
     // 포워딩 전에 자신의 주소 추가 + upstream-tick만 유지
     rreqHeader.AppendInId(receiver);
@@ -1953,8 +1983,8 @@ RoutingProtocol::ProcessHello(const RrepHeader& rrepHeader, Ipv4Address receiver
     }
     // Hello 기능이 활성화된 경우, 타이머 설정
 
-    // Hello를 수신하면 assocTick 갱신 (NT)
-    m_ntable.InsertTick(rrepHeader.GetDst());
+    // tick last seen 갱신
+    m_ntable.NoteNeighbor(rrepHeader.GetDst());
 
     if (m_enableHello)
     {
@@ -2112,6 +2142,29 @@ RoutingProtocol::AckTimerExpire(Ipv4Address neighbor, Time blacklistTimeout)
     m_routingTable.MarkLinkAsUnidirectional(neighbor, blacklistTimeout);
 }
 
+// 이웃과의 tick 누적 및 오래된 이웃 제거 타이머 만료
+void
+RoutingProtocol::AssocTickTimerExpire()
+{
+    Time now = Simulator::Now();
+
+    // 오래 못 본 이웃 제거
+    m_ntable.Purge(m_ntExpire);
+
+    // 최근에 본 이웃만 tick++
+    auto neigh = m_ntable.GetAllNeighbors();
+    for (const auto& p : neigh)
+    {
+        Time last = m_ntable.GetLastSeen(p.first);
+        if (now - last <= m_assocTickInterval) // 최근 1초 내에 봤으면
+        {
+            m_ntable.IncreaseTick(p.first);
+        }
+    }
+
+    m_assocTickTimer.Schedule(m_assocTickInterval);
+}
+
 // TTL=1인 RREP 브로드캐스트로 HELLO 메시지 전송
 void
 RoutingProtocol::SendHello()
@@ -2199,6 +2252,8 @@ RoutingProtocol::SendRerrWhenBreaksLinkToNextHop(Ipv4Address nextHop) // nextHop
 {
     NS_LOG_FUNCTION(this << nextHop);
 
+    NS_LOG_UNCOND("NB break callback fired: nextHop=" << nextHop << " hasNT="
+                                                      << m_ntable.HasNeighbor(nextHop));
     // NT 초기화
     m_ntable.DeleteNeighbor(nextHop);
 
@@ -2465,49 +2520,118 @@ RoutingProtocol::DoInitialize()
 void
 RoutingProtocol::DestDecisionTimeout(DestKey key)
 {
-    auto it = m_destCandidates.find(key);
-    if (it == m_destCandidates.end() || it->second.empty())
+    RreqHeader best;
+
+    if (!GetBestRoute(key, best))
     {
         return;
     }
 
-    // (1) 후보 중 하나 선택 (일단 첫번째)
-    RreqHeader best = it->second.front();
+    // ===== 선택 경로 로그 =====
     NS_LOG_UNCOND("=== ABR SELECTED PATH ===");
-    NS_LOG_UNCOND("Origin: " << best.GetOrigin()
-                             << " -> Dest: " << m_ipv4->GetAddress(1, 0).GetLocal());
+    NS_LOG_UNCOND("Origin: " << best.GetOrigin() << " -> Dest: " << best.GetDst());
 
     NS_LOG_UNCOND("HopCount: " << (uint32_t)best.GetHopCount());
 
     std::ostringstream oss;
     oss << "Path: ";
-
     for (const auto& id : best.GetInIds())
     {
         oss << id << " -> ";
     }
-
     oss << "DEST";
 
     NS_LOG_UNCOND(oss.str());
     NS_LOG_UNCOND("==========================");
 
-    // (2) origin으로 가는 reverse route 가져오기
+    // reverse route lookup
     RoutingTableEntry toOrigin;
     if (!m_routingTable.LookupRoute(best.GetOrigin(), toOrigin))
     {
-        // reverse route가 없으면 RREP 못 보냄
         m_destCandidates.erase(key);
         m_destDecisionEvent.erase(key);
         return;
     }
-
-    // (3) RREP 전송
+    NS_LOG_UNCOND("Ticks along path (per metric block):");
+    for (const auto& mb : best.GetMetricBlocks())
+    {
+        uint32_t at = mb.ticks.empty() ? 0 : mb.ticks[0].tick;
+        NS_LOG_UNCOND("  owner=" << mb.owner << " at=" << at);
+    }
     SendReply(best, toOrigin);
 
-    // (4) 정리
     m_destCandidates.erase(key);
     m_destDecisionEvent.erase(key);
+}
+
+bool
+RoutingProtocol::GetBestRoute(const DestKey& key, RreqHeader& outBest) const
+{
+    auto it = m_destCandidates.find(key);
+    if (it == m_destCandidates.end() || it->second.empty())
+        return false;
+
+    const auto& candidates = it->second;
+
+    bool found = false;
+    double bestHave = -1.0;
+    uint32_t bestHop = std::numeric_limits<uint32_t>::max();
+
+    for (const auto& r : candidates)
+    {
+        uint32_t H = 0; // stable count
+        uint32_t L = 0; // unstable count
+        uint32_t a = 0; // evaluated count
+
+        for (const auto& mb : r.GetMetricBlocks())
+        {
+            // 1) origin 블록은 skip (소스는 upstream tick 개념이 없음)
+            if (mb.owner == r.GetOrigin())
+            {
+                continue;
+            }
+
+            // 2) (선택) DEST가 마지막에 붙인 블록도 skip하고 싶으면
+            if (mb.owner == r.GetDst())
+            {
+                continue;
+            }
+
+            // 너 구조상 보통 1개 tick만 있음(=prev hop과의 tick)
+            uint32_t at = 0;
+            if (!mb.ticks.empty())
+            {
+                at = mb.ticks[0].tick;
+            }
+
+            if (at >= m_atThreshold)
+                H++;
+            else
+                L++;
+
+            a++;
+        }
+
+        double Have = (a == 0) ? 0.0 : (double)H / (double)a;
+        uint32_t hop = r.GetHopCount();
+
+        NS_LOG_UNCOND("Candidate: Have=" << Have << " (H=" << H << ", L=" << L << ", a=" << a << ")"
+                                         << " hop=" << hop);
+
+        if (!found || (Have > bestHave) || (Have == bestHave && hop < bestHop))
+        {
+            found = true;
+            bestHave = Have;
+            bestHop = hop;
+            outBest = r;
+        }
+    }
+
+    if (!found)
+        return false;
+
+    NS_LOG_UNCOND("Selected: Have=" << bestHave << " hop=" << bestHop);
+    return true;
 }
 
 } // namespace abr

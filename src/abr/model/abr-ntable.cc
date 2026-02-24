@@ -9,7 +9,8 @@ namespace abr
 
 NeighborTableEntry::NeighborTableEntry(Ipv4Address neighbor, uint32_t assocTick)
     : m_neighbor(neighbor),
-      m_assocTick(assocTick)
+      m_assocTick(assocTick),
+      m_lastSeen(Seconds(0))
 {
 }
 
@@ -54,6 +55,56 @@ NeighborTable::InsertTick(Ipv4Address neighbor)
     }
 }
 
+// last seen 기록
+void
+NeighborTable::NoteNeighbor(Ipv4Address neighbor)
+{
+    auto it = m_neighborTable.find(neighbor);
+    if (it == m_neighborTable.end())
+    {
+        NeighborTableEntry e(neighbor, 0);
+        e.SetLastSeen(Simulator::Now());
+        m_neighborTable.emplace(neighbor, e);
+        return;
+    }
+    it->second.SetLastSeen(Simulator::Now());
+}
+
+// Timer 기반 tick 증가
+void
+NeighborTable::IncreaseTick(Ipv4Address neighbor)
+{
+    auto it = m_neighborTable.find(neighbor);
+    if (it == m_neighborTable.end())
+    {
+        return;
+    }
+
+    uint32_t t = it->second.GetAssocTick();
+    if (t != std::numeric_limits<uint32_t>::max())
+    {
+        it->second.SetAssocTick(t + 1);
+    }
+}
+
+// 일정시간이상 Hello 미수신시 해당 이웃 삭제
+void
+NeighborTable::Purge(Time expire)
+{
+    Time now = Simulator::Now();
+    for (auto it = m_neighborTable.begin(); it != m_neighborTable.end();)
+    {
+        if (now - it->second.GetLastSeen() > expire)
+        {
+            it = m_neighborTable.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+}
+
 bool
 NeighborTable::DeleteNeighbor(Ipv4Address neighbor)
 {
@@ -80,6 +131,17 @@ NeighborTable::Print(std::ostream& os) const
     {
         os << entry.first << "\t" << entry.second.GetAssocTick() << "\n";
     }
+}
+
+Time
+NeighborTable::GetLastSeen(Ipv4Address neighbor) const
+{
+    auto it = m_neighborTable.find(neighbor);
+    if (it == m_neighborTable.end())
+    {
+        return Seconds(0);
+    }
+    return it->second.GetLastSeen();
 }
 
 } // namespace abr

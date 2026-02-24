@@ -48,9 +48,20 @@ class NeighborTableEntry
         m_assocTick++;
     }
 
+    Time GetLastSeen() const
+    {
+        return m_lastSeen;
+    }
+
+    void SetLastSeen(Time t)
+    {
+        m_lastSeen = t;
+    }
+
   private:
     Ipv4Address m_neighbor;
     uint32_t m_assocTick;
+    Time m_lastSeen;
 };
 
 class NeighborTable
@@ -58,11 +69,15 @@ class NeighborTable
   public:
     NeighborTable();
 
-    bool HasNeighbor(Ipv4Address neighbor);                                // 이웃인지 확인
-    uint32_t GetAssocTick(Ipv4Address neighbor);                           // 이웃과의 tick 반환
-    void InsertTick(Ipv4Address neighbor);                                 // tick 삽입
+    bool HasNeighbor(Ipv4Address neighbor);      // 이웃인지 확인
+    uint32_t GetAssocTick(Ipv4Address neighbor); // 이웃과의 tick 반환
+    void InsertTick(Ipv4Address neighbor);       // tick 삽입
+    void NoteNeighbor(Ipv4Address neighbor);
+    void IncreaseTick(Ipv4Address neighbor);
+    void Purge(Time expire);
     bool DeleteNeighbor(Ipv4Address neighbor);                             // 이웃을 벗어나면 삭제
     std::vector<std::pair<Ipv4Address, uint32_t>> GetAllNeighbors() const; // 모든 이웃과 tick 반환
+    Time GetLastSeen(Ipv4Address neighbor) const;
 
     void Clear()
     {
