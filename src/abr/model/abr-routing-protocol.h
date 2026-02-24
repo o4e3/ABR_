@@ -29,6 +29,7 @@
 
 #include "abr-dpd.h"
 #include "abr-neighbor.h"
+#include "abr-ntable.h"
 #include "abr-packet.h"
 #include "abr-rqueue.h"
 #include "abr-rtable.h"
@@ -89,6 +90,7 @@ class RoutingProtocol : public Ipv4RoutingProtocol
     void SetIpv4(Ptr<Ipv4> ipv4) override;
     void PrintRoutingTable(Ptr<OutputStreamWrapper> stream,
                            Time::Unit unit = Time::S) const override;
+    void PrintNeighborTable(Ptr<OutputStreamWrapper> stream) const;
 
     // Handle protocol parameters
     /**
@@ -290,6 +292,7 @@ class RoutingProtocol : public Ipv4RoutingProtocol
     uint16_t m_rreqCount;
     /// Number of RERRs used for RERR rate control
     uint16_t m_rerrCount;
+    NeighborTable m_ntable;
 
   private:
     /// Start protocol operation
@@ -503,6 +506,36 @@ class RoutingProtocol : public Ipv4RoutingProtocol
     Ptr<UniformRandomVariable> m_uniformRandomVariable;
     /// Keep track of the last bcast time
     Time m_lastBcastTime;
+
+    // ================================
+    // DEST 후보 수집/결정 (ABR 확장)
+    // ================================
+
+    // 목적지 후보 식별용 키
+    struct DestKey
+    {
+        Ipv4Address origin;
+        uint32_t requestId;
+
+        bool operator<(const DestKey& o) const
+        {
+            if (origin == o.origin)
+                return requestId < o.requestId;
+            return origin < o.origin;
+        }
+    };
+
+    // 후보 RREQ 저장
+    std::map<DestKey, std::vector<RreqHeader>> m_destCandidates;
+
+    // 타이머 저장
+    std::map<DestKey, EventId> m_destDecisionEvent;
+
+    // 목적지 대기 시간
+    Time m_destDecisionDelay;
+
+    // 타임아웃 핸들러
+    void DestDecisionTimeout(DestKey key);
 };
 
 } // namespace abr

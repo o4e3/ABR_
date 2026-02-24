@@ -309,7 +309,7 @@ class RreqHeader : public Header
         return m_originSeqNo;
     }
 
-    void SetInIds(const std::vector<Ipv4Address>& inIds)
+    void SetInIds(std::vector<Ipv4Address>& inIds)
     {
         m_inIds = inIds;
     }

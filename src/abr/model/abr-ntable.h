@@ -58,15 +58,18 @@ class NeighborTable
   public:
     NeighborTable();
 
-    bool HasNeighbor(Ipv4Address neighbor);      // 이웃인지 확인
-    uint32_t GetAssocTick(Ipv4Address neighbor); // 이웃과의 tick 반환
-    void InsertTick(Ipv4Address neighbor);       // tick 삽입
-    bool DeleteNeighbor(Ipv4Address neighbor);   // 이웃을 벗어나면 삭제
+    bool HasNeighbor(Ipv4Address neighbor);                                // 이웃인지 확인
+    uint32_t GetAssocTick(Ipv4Address neighbor);                           // 이웃과의 tick 반환
+    void InsertTick(Ipv4Address neighbor);                                 // tick 삽입
+    bool DeleteNeighbor(Ipv4Address neighbor);                             // 이웃을 벗어나면 삭제
+    std::vector<std::pair<Ipv4Address, uint32_t>> GetAllNeighbors() const; // 모든 이웃과 tick 반환
 
     void Clear()
     {
         m_neighborTable.clear();
     } // 이웃 테이블 초기화
+
+    void Print(std::ostream& os) const;
 
   private:
     std::map<Ipv4Address, NeighborTableEntry> m_neighborTable; // 이웃 테이블

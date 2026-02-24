@@ -60,5 +60,27 @@ NeighborTable::DeleteNeighbor(Ipv4Address neighbor)
     return m_neighborTable.erase(neighbor) > 0;
 }
 
+std::vector<std::pair<Ipv4Address, uint32_t>>
+NeighborTable::GetAllNeighbors() const
+{
+    std::vector<std::pair<Ipv4Address, uint32_t>> neighbors;
+    for (const auto& entry : m_neighborTable)
+    {
+        neighbors.push_back(std::make_pair(entry.first, entry.second.GetAssocTick()));
+    }
+    return neighbors;
+}
+
+void
+NeighborTable::Print(std::ostream& os) const
+{
+    os << "NeighborTable\n";
+    os << "Neighbor\tAssocTick\n";
+    for (const auto& entry : m_neighborTable)
+    {
+        os << entry.first << "\t" << entry.second.GetAssocTick() << "\n";
+    }
+}
+
 } // namespace abr
 } // namespace ns3

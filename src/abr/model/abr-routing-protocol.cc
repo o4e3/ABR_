@@ -179,7 +179,8 @@ RoutingProtocol::RoutingProtocol()
       m_htimer(Timer::CANCEL_ON_DESTROY),
       m_rreqRateLimitTimer(Timer::CANCEL_ON_DESTROY),
       m_rerrRateLimitTimer(Timer::CANCEL_ON_DESTROY),
-      m_lastBcastTime(Seconds(0))
+      m_lastBcastTime(Seconds(0)),
+      m_destDecisionDelay(MilliSeconds(30)) // 30초동안 후보 경로 수집
 {
     m_nb.SetCallback(MakeCallback(&RoutingProtocol::SendRerrWhenBreaksLinkToNextHop, this));
     // 이웃링크가 끊어지면 자동으로 RERR 전송
@@ -389,6 +390,16 @@ RoutingProtocol::PrintRoutingTable(Ptr<OutputStreamWrapper> stream, Time::Unit u
 
     m_routingTable.Print(stream, unit);
     *stream->GetStream() << std::endl;
+}
+
+void
+RoutingProtocol::PrintNeighborTable(Ptr<OutputStreamWrapper> stream) const
+{
+    std::ostream* os = stream->GetStream();
+    *os << "Node: " << m_ipv4->GetObject<Node>()->GetId()
+        << ", Time: " << Simulator::Now().GetSeconds() << "s, NeighborTable\n";
+    m_ntable.Print(*os);
+    *os << "\n";
 }
 
 int64_t
@@ -840,6 +851,7 @@ RoutingProtocol::NotifyInterfaceDown(uint32_t i)
         NS_LOG_LOGIC("No abr interfaces");
         m_htimer.Cancel();
         m_nb.Clear();
+        m_ntable.Clear(); // 이웃 테이블 초기화
         m_routingTable.Clear();
         return;
     }
@@ -1041,7 +1053,6 @@ RoutingProtocol::LoopbackRoute(const Ipv4Header& hdr, Ptr<NetDevice> oif) const
     return rt;
 }
 
-// TODO1
 // RREQ 메시지 생성 및 전송
 void
 RoutingProtocol::SendRequest(Ipv4Address dst)
@@ -1146,6 +1157,31 @@ RoutingProtocol::SendRequest(Ipv4Address dst)
         // TOD02 rreqHeader에 자신의 식별자 주소, tick = 0 으로 추가
         RreqHeader rHeader = rreqHeader;
         rHeader.SetOrigin(iface.GetLocal());
+
+        // TODO src 노드도 현재 IN_ID 추가
+        rHeader.AppendInId(iface.GetLocal());
+
+        // TODO src 노드의 이웃들의 tick을 Metric Block에 추가
+        std::vector<NeighborTick> ticks;
+
+        for (const auto& pair : m_ntable.GetAllNeighbors())
+        {
+            NeighborTick nt;
+            nt.neighbor = pair.first;
+            nt.tick = pair.second;
+            ticks.push_back(nt);
+        }
+
+        rHeader.AppendMetricBlock(iface.GetLocal(), ticks);
+
+        // NS_LOG_UNCOND("RREQ src-build: me=" << iface.GetLocal()
+        //                                     << " inIds=" << rHeader.GetInIds().size() << "
+        //                                     blocks="
+        //                                     << rHeader.GetMetricBlocks().size() << " firstTicks="
+        //                                     << (rHeader.GetMetricBlocks().empty()
+        //                                             ? 0
+        //                                             :
+        //                                             rHeader.GetMetricBlocks()[0].ticks.size()));
 
         m_rreqIdCache.IsDuplicate(
             iface.GetLocal(),
@@ -1254,6 +1290,10 @@ RoutingProtocol::RecvAbr(Ptr<Socket> socket)
     UpdateRouteToNeighbor(sender, receiver);
     TypeHeader tHeader(ABRTYPE_RREQ);
     packet->RemoveHeader(tHeader);
+
+    // NS_LOG_UNCOND("ABR recv: me=" << receiver << " from=" << sender
+    //                               << " type=" << int(tHeader.Get()) << " uid=" <<
+    //                               packet->GetUid());
     if (!tHeader.IsValid())
     {
         NS_LOG_DEBUG("ABR message " << packet->GetUid() << " with unknown type received: "
@@ -1349,8 +1389,15 @@ void
 RoutingProtocol::RecvRequest(Ptr<Packet> p, Ipv4Address receiver, Ipv4Address src)
 {
     NS_LOG_FUNCTION(this);
+
     RreqHeader rreqHeader;
     p->RemoveHeader(rreqHeader);
+    // NS_LOG_UNCOND("RREQ recv-before-fwd: me="
+    //               << receiver << " prev=" << src << " inIds=" << rreqHeader.GetInIds().size()
+    //               << " blocks=" << rreqHeader.GetMetricBlocks().size() << " lastOwner="
+    //               << (rreqHeader.GetMetricBlocks().empty()
+    //                       ? Ipv4Address("0.0.0.0")
+    //                       : rreqHeader.GetMetricBlocks().back().owner));
 
     // A node ignores all RREQs received from any node in its blacklist
     RoutingTableEntry toPrev;
@@ -1363,10 +1410,15 @@ RoutingProtocol::RecvRequest(Ptr<Packet> p, Ipv4Address receiver, Ipv4Address sr
         }
     }
 
-    // 중복된 RREQ인지 확인
+    // TODO
+    // 목적지인 경우에는 RREP를 보내기 전에 일정 시간 대기하여 후보 RREQ들을 모은 후 가장 좋은
+    // 경로로 RREP 보내도록 구현 중복된 RREQ인지 확인
     uint32_t id = rreqHeader.GetId();
     Ipv4Address origin = rreqHeader.GetOrigin();
-    if (m_rreqIdCache.IsDuplicate(origin, id))
+    Ipv4Address dst = rreqHeader.GetDst();
+
+    bool isDst = IsMyOwnAddress(dst);
+    if (!isDst && m_rreqIdCache.IsDuplicate(origin, id))
     {
         NS_LOG_DEBUG("Ignoring RREQ due to duplicate");
         return;
@@ -1376,17 +1428,6 @@ RoutingProtocol::RecvRequest(Ptr<Packet> p, Ipv4Address receiver, Ipv4Address sr
     uint8_t hop = rreqHeader.GetHopCount() + 1;
     rreqHeader.SetHopCount(hop);
 
-    /*
-     *  When the reverse route is created or updated, the following actions on the route are also
-     * carried out:
-     *  1. the Originator Sequence Number from the RREQ is compared to the corresponding destination
-     * sequence number in the route table entry and copied if greater than the existing value there
-     *  2. the valid sequence number field is set to true;
-     *  3. the next hop in the routing table becomes the node from which the  RREQ was received
-     *  4. the hop count is copied from the Hop Count in the RREQ message;
-     *  5. the Lifetime is set to be the maximum of (ExistingLifetime, MinimalLifetime), where
-     *     MinimalLifetime = current time + 2*NetTraversalTime - 2*HopCount*NodeTraversalTime
-     */
     RoutingTableEntry toOrigin;
     if (!m_routingTable.LookupRoute(origin,
                                     toOrigin)) // 다시 originator로 돌아가는 reverse route 생성
@@ -1465,38 +1506,40 @@ RoutingProtocol::RecvRequest(Ptr<Packet> p, Ipv4Address receiver, Ipv4Address sr
 
     //  A node generates a RREP if either:
     //  (i)  it is itself the destination,
-    if (IsMyOwnAddress(rreqHeader.GetDst()))
+    // TODO
+    // rreq를 받은 노드가 목적지이면 일정시간 대기해 후보 RREQ 수집후 최적 경로 결정 후 RREP 생성
+    if (isDst)
     {
-        m_routingTable.LookupRoute(origin, toOrigin);
-        NS_LOG_DEBUG("Send reply since I am the destination");
-        SendReply(rreqHeader, toOrigin);
-        return;
+        DestKey key{origin, id};
+
+        // 후보 저장
+        m_destCandidates[key].push_back(rreqHeader);
+
+        NS_LOG_UNCOND("DEST candidate received: me=" << receiver << " from=" << src
+                                                     << " total=" << m_destCandidates[key].size());
+
+        // 처음 들어온 경우만 타이머 설정
+        if (m_destDecisionEvent.find(key) == m_destDecisionEvent.end())
+        {
+            m_destDecisionEvent[key] = Simulator::Schedule(m_destDecisionDelay,
+                                                           &RoutingProtocol::DestDecisionTimeout,
+                                                           this,
+                                                           key);
+        }
+
+        return; // 즉시 RREP 보내지 않음
     }
-    /*
-     * (ii) or it has an active route to the destination, the destination sequence number in the
-     * node's existing route table entry for the destination is valid and greater than or equal to
-     * the Destination Sequence Number of the RREQ, and the "destination only" flag is NOT set.
-     */
+
     RoutingTableEntry toDst;
-    Ipv4Address dst = rreqHeader.GetDst();
-    if (m_routingTable.LookupRoute(dst, toDst))
+    Ipv4Address dest = rreqHeader.GetDst();
+    if (m_routingTable.LookupRoute(dest, toDst))
     {
-        /*
-         * Drop RREQ, This node RREP will make a loop.
-         */
         if (toDst.GetNextHop() == src) // 목적지의 다음 홉이 RREQ를 보낸 노드이면 loop 발생
         {
             NS_LOG_DEBUG("Drop RREQ from " << src << ", dest next hop " << toDst.GetNextHop());
             return;
         }
-        /*
-         * The Destination Sequence number for the requested destination is set to the maximum of
-         * the corresponding value received in the RREQ message, and the destination sequence value
-         * currently maintained by the node for the requested destination. However, the forwarding
-         * node MUST NOT modify its maintained value for the destination sequence number, even if
-         * the value received in the incoming RREQ is larger than the value currently maintained by
-         * the forwarding node.
-         */
+
         if ((rreqHeader.GetUnknownSeqno() ||
              (int32_t(toDst.GetSeqNo()) - int32_t(rreqHeader.GetDstSeqno()) >= 0)) &&
             toDst.GetValidSeqNo()) // seq 조건 검사(목적지 seqno가 unknown 이거나 라우팅테이블의
@@ -1518,11 +1561,30 @@ RoutingProtocol::RecvRequest(Ptr<Packet> p, Ipv4Address receiver, Ipv4Address sr
 
     SocketIpTtlTag tag;
     p->RemovePacketTag(tag);
-    if (tag.GetTtl() < 2) // ttl 소진되면 forward 불가
-    {
-        NS_LOG_DEBUG("TTL exceeded. Drop RREQ origin " << src << " destination " << dst);
-        return;
-    }
+    // if (tag.GetTtl() < 2) // ttl 소진되면 forward 불가
+    // {
+    //     NS_LOG_DEBUG("TTL exceeded. Drop RREQ origin " << src << " destination " << dst);
+    //     return;
+    // }
+
+    // 포워딩 전에 자신의 주소 추가 + upstream-tick만 유지
+    rreqHeader.AppendInId(receiver);
+
+    // 이전 홉과 현재 노드 사이 tick 조회
+    uint32_t assocTick = m_ntable.GetAssocTick(src);
+
+    // 현재 노드 metric block 추가
+    std::vector<NeighborTick> ticks;
+    NeighborTick nt;
+    nt.neighbor = src;
+    nt.tick = assocTick;
+    ticks.push_back(nt);
+
+    rreqHeader.AppendMetricBlock(receiver, ticks);
+
+    NS_LOG_UNCOND("RREQ fwd: me=" << receiver << " prev=" << src << " tick=" << assocTick
+                                  << " inIds=" << rreqHeader.GetInIds().size()
+                                  << " blocks=" << rreqHeader.GetMetricBlocks().size());
 
     // ttl 남아있으면 RREQ 재전송(포워딩)
     for (auto j = m_socketAddresses.begin(); j != m_socketAddresses.end(); ++j)
@@ -1890,6 +1952,10 @@ RoutingProtocol::ProcessHello(const RrepHeader& rrepHeader, Ipv4Address receiver
         m_routingTable.Update(toNeighbor);
     }
     // Hello 기능이 활성화된 경우, 타이머 설정
+
+    // Hello를 수신하면 assocTick 갱신 (NT)
+    m_ntable.InsertTick(rrepHeader.GetDst());
+
     if (m_enableHello)
     {
         m_nb.Update(rrepHeader.GetDst(), Time(m_allowedHelloLoss * m_helloInterval));
@@ -2132,6 +2198,10 @@ void
 RoutingProtocol::SendRerrWhenBreaksLinkToNextHop(Ipv4Address nextHop) // nextHop은 단절경로
 {
     NS_LOG_FUNCTION(this << nextHop);
+
+    // NT 초기화
+    m_ntable.DeleteNeighbor(nextHop);
+
     RerrHeader rerrHeader;
     std::vector<Ipv4Address> precursors;
     std::map<Ipv4Address, uint32_t> unreachable;
@@ -2390,6 +2460,54 @@ RoutingProtocol::DoInitialize()
         m_htimer.Schedule(MilliSeconds(startTime));
     }
     Ipv4RoutingProtocol::DoInitialize();
+}
+
+void
+RoutingProtocol::DestDecisionTimeout(DestKey key)
+{
+    auto it = m_destCandidates.find(key);
+    if (it == m_destCandidates.end() || it->second.empty())
+    {
+        return;
+    }
+
+    // (1) 후보 중 하나 선택 (일단 첫번째)
+    RreqHeader best = it->second.front();
+    NS_LOG_UNCOND("=== ABR SELECTED PATH ===");
+    NS_LOG_UNCOND("Origin: " << best.GetOrigin()
+                             << " -> Dest: " << m_ipv4->GetAddress(1, 0).GetLocal());
+
+    NS_LOG_UNCOND("HopCount: " << (uint32_t)best.GetHopCount());
+
+    std::ostringstream oss;
+    oss << "Path: ";
+
+    for (const auto& id : best.GetInIds())
+    {
+        oss << id << " -> ";
+    }
+
+    oss << "DEST";
+
+    NS_LOG_UNCOND(oss.str());
+    NS_LOG_UNCOND("==========================");
+
+    // (2) origin으로 가는 reverse route 가져오기
+    RoutingTableEntry toOrigin;
+    if (!m_routingTable.LookupRoute(best.GetOrigin(), toOrigin))
+    {
+        // reverse route가 없으면 RREP 못 보냄
+        m_destCandidates.erase(key);
+        m_destDecisionEvent.erase(key);
+        return;
+    }
+
+    // (3) RREP 전송
+    SendReply(best, toOrigin);
+
+    // (4) 정리
+    m_destCandidates.erase(key);
+    m_destDecisionEvent.erase(key);
 }
 
 } // namespace abr
