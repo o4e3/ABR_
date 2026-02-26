@@ -9,8 +9,7 @@ namespace abr
 
 NeighborTableEntry::NeighborTableEntry(Ipv4Address neighbor, uint32_t assocTick)
     : m_neighbor(neighbor),
-      m_assocTick(assocTick),
-      m_lastSeen(Seconds(0))
+      m_assocTick(assocTick)
 {
 }
 
@@ -18,12 +17,14 @@ NeighborTableEntry::~NeighborTableEntry() = default;
 
 NeighborTable::NeighborTable() = default;
 
+// 해당 이웃이 NT에 존재하는지 확인
 bool
 NeighborTable::HasNeighbor(Ipv4Address neighbor)
 {
     return m_neighborTable.find(neighbor) != m_neighborTable.end();
 }
 
+// 해당 이웃과의 tick 반환
 uint32_t
 NeighborTable::GetAssocTick(Ipv4Address neighbor)
 {
@@ -35,8 +36,9 @@ NeighborTable::GetAssocTick(Ipv4Address neighbor)
     return it->second.GetAssocTick();
 }
 
+// 해당 이웃의 tick 삽입 (처음 본 이웃이면 tick=1로 시작, 이미 있으면 tick++)
 void
-NeighborTable::InsertTick(Ipv4Address neighbor)
+NeighborTable::IncreaseTick(Ipv4Address neighbor)
 {
     auto it = m_neighborTable.find(neighbor);
 
@@ -53,64 +55,18 @@ NeighborTable::InsertTick(Ipv4Address neighbor)
     {
         it->second.SetAssocTick(t + 1);
     }
+    // std::cout << "NT inc " << neighbor << " " << t << "->" << it->second.GetAssocTick()
+    //           << " size=" << m_neighborTable.size() << "\n";
 }
 
-// last seen 기록
-void
-NeighborTable::NoteNeighbor(Ipv4Address neighbor)
-{
-    auto it = m_neighborTable.find(neighbor);
-    if (it == m_neighborTable.end())
-    {
-        NeighborTableEntry e(neighbor, 0);
-        e.SetLastSeen(Simulator::Now());
-        m_neighborTable.emplace(neighbor, e);
-        return;
-    }
-    it->second.SetLastSeen(Simulator::Now());
-}
-
-// Timer 기반 tick 증가
-void
-NeighborTable::IncreaseTick(Ipv4Address neighbor)
-{
-    auto it = m_neighborTable.find(neighbor);
-    if (it == m_neighborTable.end())
-    {
-        return;
-    }
-
-    uint32_t t = it->second.GetAssocTick();
-    if (t != std::numeric_limits<uint32_t>::max())
-    {
-        it->second.SetAssocTick(t + 1);
-    }
-}
-
-// 일정시간이상 Hello 미수신시 해당 이웃 삭제
-void
-NeighborTable::Purge(Time expire)
-{
-    Time now = Simulator::Now();
-    for (auto it = m_neighborTable.begin(); it != m_neighborTable.end();)
-    {
-        if (now - it->second.GetLastSeen() > expire)
-        {
-            it = m_neighborTable.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
-    }
-}
-
+// 해당 이웃 삭제
 bool
 NeighborTable::DeleteNeighbor(Ipv4Address neighbor)
 {
     return m_neighborTable.erase(neighbor) > 0;
 }
 
+// 존재하는 모든 이웃 반환
 std::vector<std::pair<Ipv4Address, uint32_t>>
 NeighborTable::GetAllNeighbors() const
 {
@@ -131,17 +87,6 @@ NeighborTable::Print(std::ostream& os) const
     {
         os << entry.first << "\t" << entry.second.GetAssocTick() << "\n";
     }
-}
-
-Time
-NeighborTable::GetLastSeen(Ipv4Address neighbor) const
-{
-    auto it = m_neighborTable.find(neighbor);
-    if (it == m_neighborTable.end())
-    {
-        return Seconds(0);
-    }
-    return it->second.GetLastSeen();
 }
 
 } // namespace abr

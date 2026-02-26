@@ -478,13 +478,6 @@ class RoutingProtocol : public Ipv4RoutingProtocol
     /// Hello timer
     Timer m_htimer;
 
-    // tick 갱신 타이머
-    Timer m_assocTickTimer;
-    Time m_assocTickInterval;
-    Time m_ntExpire;
-
-    void AssocTickTimerExpire();
-
     /// Schedule next send of hello message
     void HelloTimerExpire();
     /// RREQ rate limit timer
@@ -538,12 +531,12 @@ class RoutingProtocol : public Ipv4RoutingProtocol
     // 목적지 대기 시간
     Time m_destDecisionDelay;
 
-    // 타임아웃 핸들러
-    void DestDecisionTimeout(DestKey key);
+    void DestDecision(DestKey key);
 
     bool GetBestRoute(const DestKey& key, RreqHeader& best) const;
 
-    uint32_t m_atThreshold = 1; // AT threshold
+    // AT threshold
+    uint32_t m_atThreshold = 1;
 };
 
 } // namespace abr

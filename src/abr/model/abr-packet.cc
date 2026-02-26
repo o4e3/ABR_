@@ -301,8 +301,9 @@ RreqHeader::Print(std::ostream& os) const
     {
         os << "[owner=" << block.owner << " : ";
         for (const auto& t : block.ticks)
-            os << "(" << t.neighbor << "," << t.tick << ") ";
+            os << "(" << t.neighbor << ", " << t.tick << ") ";
         os << "] ";
+        os << "\n";
     }
 }
 

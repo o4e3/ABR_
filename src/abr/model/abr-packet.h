@@ -154,6 +154,11 @@ struct NeighborTick
           tick(t)
     {
     }
+
+    void Print(std::ostream& os) const
+    {
+        os << "(" << neighbor << " tick=" << tick << ")\n";
+    }
 };
 
 struct MetricBlock
@@ -327,6 +332,16 @@ class RreqHeader : public Header
     std::vector<MetricBlock> GetMetricBlocks() const
     {
         return m_metricBlocks;
+    }
+
+    std::vector<NeighborTick> GetNeighborTicks() const
+    {
+        std::vector<NeighborTick> allTicks;
+        for (const auto& block : m_metricBlocks)
+        {
+            allTicks.insert(allTicks.end(), block.ticks.begin(), block.ticks.end());
+        }
+        return allTicks;
     }
 
     // Flags
