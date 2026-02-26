@@ -1402,12 +1402,6 @@ RoutingProtocol::RecvRequest(Ptr<Packet> p, Ipv4Address receiver, Ipv4Address sr
 
     RreqHeader rreqHeader;
     p->RemoveHeader(rreqHeader);
-    // NS_LOG_UNCOND("RREQ recv-before-fwd: me="
-    //               << receiver << " prev=" << src << " inIds=" << rreqHeader.GetInIds().size()
-    //               << " blocks=" << rreqHeader.GetMetricBlocks().size() << " lastOwner="
-    //               << (rreqHeader.GetMetricBlocks().empty()
-    //                       ? Ipv4Address("0.0.0.0")
-    //                       : rreqHeader.GetMetricBlocks().back().owner));
 
     // A node ignores all RREQs received from any node in its blacklist
     RoutingTableEntry toPrev;
@@ -1515,32 +1509,20 @@ RoutingProtocol::RecvRequest(Ptr<Packet> p, Ipv4Address receiver, Ipv4Address sr
 
     // TODO
     // rreq를 받은 노드가 목적지이면 일정시간 대기해 후보 RREQ 수집후 최적 경로 결정 후 RREP 생성
+
     if (isDst)
     {
-        uint32_t assocTick = m_ntable.GetAssocTick(src);
-        std::vector<NeighborTick> ticks;
-        NeighborTick nt;
-        nt.neighbor = src;
-        nt.tick = assocTick;
-        ticks.push_back(nt);
-
-        rreqHeader.AppendMetricBlock(receiver, ticks);
+        rreqHeader.PruneUpstreamMetricBlock(src, receiver);
 
         DestKey key{origin, id};
-
-        // 후보 저장
         m_destCandidates[key].push_back(rreqHeader);
-
-        NS_LOG_UNCOND("DEST candidate received: me=" << receiver << " from=" << src
-                                                     << " total=" << m_destCandidates[key].size());
 
         if (m_destDecisionEvent.find(key) == m_destDecisionEvent.end())
         {
             m_destDecisionEvent[key] =
                 Simulator::Schedule(m_destDecisionDelay, &RoutingProtocol::DestDecision, this, key);
         }
-
-        return; // 즉시 RREP 보내지 않음
+        return;
     }
 
     RoutingTableEntry toDst;
@@ -1583,21 +1565,9 @@ RoutingProtocol::RecvRequest(Ptr<Packet> p, Ipv4Address receiver, Ipv4Address sr
     // 포워딩 전에 자신의 주소 추가 + upstream-tick만 유지
     rreqHeader.AppendInId(receiver);
 
-    // 이전 홉과 현재 노드 사이 tick 조회
-    uint32_t assocTick = m_ntable.GetAssocTick(src);
-
-    // 현재 노드 metric block 추가
-    std::vector<NeighborTick> ticks;
-    NeighborTick nt;
-    nt.neighbor = src;
-    nt.tick = assocTick;
-    ticks.push_back(nt);
-
-    rreqHeader.AppendMetricBlock(receiver, ticks);
-
-    NS_LOG_UNCOND("RREQ fwd: me=" << receiver << " prev=" << src << " tick=" << assocTick
-                                  << " inIds=" << rreqHeader.GetInIds().size()
-                                  << " blocks=" << rreqHeader.GetMetricBlocks().size());
+    rreqHeader.PruneUpstreamMetricBlock(src, receiver);
+    std::vector<NeighborTick> allTicks = m_ntable.GetAllNeighborTicks();
+    rreqHeader.AppendMetricBlock(receiver, allTicks);
 
     // ttl 남아있으면 RREQ 재전송(포워딩)
     for (auto j = m_socketAddresses.begin(); j != m_socketAddresses.end(); ++j)
@@ -1967,8 +1937,8 @@ RoutingProtocol::ProcessHello(const RrepHeader& rrepHeader, Ipv4Address receiver
 
     // Hello를 보낸 노드 엔트리에 관해서 tick 증가
     m_ntable.IncreaseTick(rrepHeader.GetDst());
-    NS_LOG_UNCOND("HELLO rx: me=" << receiver << " from=" << rrepHeader.GetDst()
-                                  << " tick=" << m_ntable.GetAssocTick(rrepHeader.GetDst()));
+    // NS_LOG_UNCOND("HELLO rx: me=" << receiver << " from=" << rrepHeader.GetDst()
+    //                               << " tick=" << m_ntable.GetAssocTick(rrepHeader.GetDst()));
 
     // HEllo 메시지를 받으면 update
     if (m_enableHello)
@@ -2212,7 +2182,7 @@ RoutingProtocol::SendRerrWhenBreaksLinkToNextHop(Ipv4Address nextHop) // nextHop
 
     // NT 초기화
     m_ntable.DeleteNeighbor(nextHop);
-    NS_LOG_UNCOND("route break: " << nextHop << " hasNT=" << m_ntable.HasNeighbor(nextHop));
+    // NS_LOG_UNCOND("route break: " << nextHop << " hasNT=" << m_ntable.HasNeighbor(nextHop));
 
     RerrHeader rerrHeader;
     std::vector<Ipv4Address> precursors;
@@ -2484,8 +2454,6 @@ RoutingProtocol::DestDecision(DestKey key)
 
     // 선택된 경로 로그 출력
     NS_LOG_UNCOND("=== ABR SELECTED PATH ===");
-    NS_LOG_UNCOND("Origin: " << best.GetOrigin() << " -> Dest: " << best.GetDst());
-
     NS_LOG_UNCOND("HopCount: " << (uint32_t)best.GetHopCount());
 
     std::ostringstream oss;
@@ -2495,8 +2463,10 @@ RoutingProtocol::DestDecision(DestKey key)
         oss << id << " -> ";
     }
     oss << "DEST";
+    oss << "\n";
+    std::cout << oss.str() << "\n";
 
-    NS_LOG_UNCOND(oss.str());
+    // NS_LOG_UNCOND(oss.str());
 
     // reverse route lookup
     RoutingTableEntry toOrigin;
@@ -2525,9 +2495,7 @@ RoutingProtocol::GetBestRoute(const DestKey& key, RreqHeader& outBest) const
     const auto& candidates = it->second;
 
     bool found = false;
-    double H = 0.0;
     double bestHave = -1.0;
-    uint32_t sum = 0;
     std::vector<double> hAveValues = {};
 
     for (const auto& r : candidates)
@@ -2561,6 +2529,7 @@ RoutingProtocol::GetBestRoute(const DestKey& key, RreqHeader& outBest) const
     {
         std::cout << h << " ";
     }
+    std::cout << "\n";
 
     // H 평균값이 가장 높은 경로 선택
     for (size_t i = 0; i < hAveValues.size(); ++i)
@@ -2571,7 +2540,6 @@ RoutingProtocol::GetBestRoute(const DestKey& key, RreqHeader& outBest) const
             outBest = candidates[i];
             found = true;
         }
-        return true;
     }
 
     // H 평균값이 다 동일한 경우 hop count가 가장 작은 경로 선택

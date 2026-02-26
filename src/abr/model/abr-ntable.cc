@@ -1,5 +1,7 @@
 #include "abr-ntable.h"
 
+#include "abr-packet.h"
+
 #include <limits>
 
 namespace ns3
@@ -87,6 +89,22 @@ NeighborTable::Print(std::ostream& os) const
     {
         os << entry.first << "\t" << entry.second.GetAssocTick() << "\n";
     }
+}
+
+std::vector<NeighborTick>
+NeighborTable::GetAllNeighborTicks() const
+{
+    std::vector<NeighborTick> ticks;
+    ticks.reserve(m_neighborTable.size());
+
+    for (const auto& entry : m_neighborTable)
+    {
+        NeighborTick nt;
+        nt.neighbor = entry.first;
+        nt.tick = entry.second.GetAssocTick();
+        ticks.push_back(nt);
+    }
+    return ticks;
 }
 
 } // namespace abr

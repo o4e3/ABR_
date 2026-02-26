@@ -27,6 +27,8 @@
 #ifndef ABRPACKET_H
 #define ABRPACKET_H
 
+#include "abr-metric-types.h"
+
 #include "ns3/enum.h"
 #include "ns3/header.h"
 #include "ns3/ipv4-address.h"
@@ -142,30 +144,30 @@ std::ostream& operator<<(std::ostream& os, const TypeHeader& h);
   \endverbatim
 */
 
-struct NeighborTick
-{
-    Ipv4Address neighbor;
-    uint32_t tick;
+// struct NeighborTick
+// {
+//     Ipv4Address neighbor;
+//     uint32_t tick;
 
-    NeighborTick() = default;
+//     NeighborTick() = default;
 
-    NeighborTick(Ipv4Address n, uint32_t t)
-        : neighbor(n),
-          tick(t)
-    {
-    }
+//     NeighborTick(Ipv4Address n, uint32_t t)
+//         : neighbor(n),
+//           tick(t)
+//     {
+//     }
 
-    void Print(std::ostream& os) const
-    {
-        os << "(" << neighbor << " tick=" << tick << ")\n";
-    }
-};
+//     void Print(std::ostream& os) const
+//     {
+//         os << "(" << neighbor << " tick=" << tick << ")\n";
+//     }
+// };
 
-struct MetricBlock
-{
-    Ipv4Address owner;
-    std::vector<NeighborTick> ticks;
-};
+// struct MetricBlock
+// {
+//     Ipv4Address owner;
+//     std::vector<NeighborTick> ticks;
+// };
 
 // 기존 RREQ 헤더에 IN_LEN, IN_IDS[]와 Tick[] 필드를 추가
 class RreqHeader : public Header
@@ -357,6 +359,7 @@ class RreqHeader : public Header
     void AppendMetricBlock(Ipv4Address owner,
                            const std::vector<NeighborTick>& ticks); // MetricBlock 누적
     bool PruneLastMetricBlock(Ipv4Address me); // 나와 upstream 사이 tick만 유지
+    bool PruneUpstreamMetricBlock(Ipv4Address upstreamOwner, Ipv4Address me);
 
     bool operator==(const RreqHeader& o) const;
 
