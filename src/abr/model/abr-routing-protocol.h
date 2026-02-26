@@ -536,7 +536,7 @@ class RoutingProtocol : public Ipv4RoutingProtocol
     bool GetBestRoute(const DestKey& key, RreqHeader& best) const;
 
     // AT threshold
-    uint32_t m_atThreshold = 1;
+    uint32_t m_atThreshold = 5;
 };
 
 } // namespace abr

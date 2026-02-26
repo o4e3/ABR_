@@ -427,6 +427,48 @@ RreqHeader::PruneLastMetricBlock(Ipv4Address me)
 }
 
 bool
+RreqHeader::PruneUpstreamMetricBlock(Ipv4Address upstreamOwner, Ipv4Address me)
+{
+    if (m_metricBlocks.empty())
+    {
+        return false;
+    }
+
+    for (auto it = m_metricBlocks.rbegin(); it != m_metricBlocks.rend(); ++it)
+    {
+        if (it->owner != upstreamOwner)
+        {
+            continue;
+        }
+
+        if (it->ticks.empty())
+        {
+            return false;
+        }
+
+        std::vector<NeighborTick> prunedTicks;
+        for (const auto& t : it->ticks)
+        {
+            if (t.neighbor == me)
+            {
+                prunedTicks.push_back(t);
+                break;
+            }
+        }
+
+        if (prunedTicks.empty())
+        {
+            return false;
+        }
+
+        it->ticks = prunedTicks;
+        return true;
+    }
+
+    return false;
+}
+
+bool
 RreqHeader::operator==(const RreqHeader& o) const
 {
     if (!(m_flags == o.m_flags && m_reserved == o.m_reserved && m_hopCount == o.m_hopCount &&

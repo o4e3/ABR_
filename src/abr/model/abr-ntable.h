@@ -1,6 +1,8 @@
 #ifndef ABR_NTABLE_H
 #define ABR_NTABLE_H
 
+#include "abr-metric-types.h"
+
 #include "ns3/ipv4-route.h"
 #include "ns3/ipv4.h"
 #include "ns3/net-device.h"
@@ -63,6 +65,7 @@ class NeighborTable
     void IncreaseTick(Ipv4Address neighbor);
     bool DeleteNeighbor(Ipv4Address neighbor);
     std::vector<std::pair<Ipv4Address, uint32_t>> GetAllNeighbors() const;
+    std::vector<NeighborTick> GetAllNeighborTicks() const;
 
     void Clear()
     {
