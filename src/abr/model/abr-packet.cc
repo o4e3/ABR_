@@ -135,6 +135,7 @@ operator<<(std::ostream& os, const TypeHeader& h)
 //-----------------------------------------------------------------------------
 // RREQ
 //-----------------------------------------------------------------------------
+
 RreqHeader::RreqHeader(uint8_t flags,
                        uint8_t reserved,
                        uint8_t hopCount,
@@ -142,7 +143,9 @@ RreqHeader::RreqHeader(uint8_t flags,
                        Ipv4Address dst,
                        uint32_t dstSeqNo,
                        Ipv4Address origin,
-                       uint32_t originSeqNo)
+                       uint32_t originSeqNo,
+                       const std::vector<Ipv4Address>& inIds,
+                       const std::vector<MetricBlock>& metricBlocks)
     : m_flags(flags),
       m_reserved(reserved),
       m_hopCount(hopCount),
@@ -150,7 +153,10 @@ RreqHeader::RreqHeader(uint8_t flags,
       m_dst(dst),
       m_dstSeqNo(dstSeqNo),
       m_origin(origin),
-      m_originSeqNo(originSeqNo)
+      m_originSeqNo(originSeqNo),
+      m_inIds(inIds),
+      m_metricBlocks(metricBlocks)
+
 {
 }
 
@@ -175,9 +181,26 @@ RreqHeader::GetInstanceTypeId() const
 uint32_t
 RreqHeader::GetSerializedSize() const
 {
-    return 23;
+    // 기본 필드
+    uint32_t size = 23;
+
+    // InIds 길이저장 + InIds
+    size += 4;
+    size += m_inIds.size() * 4;
+
+    // MetricBlocks 길이저장
+    size += 4;
+    for (const auto& block : m_metricBlocks)
+    {
+        size += 4;                            // owner
+        size += 4;                            // ticks 길이 저장
+        size += block.ticks.size() * (4 + 4); // neighbor + tick
+    }
+
+    return size;
 }
 
+// 패킷 직렬화
 void
 RreqHeader::Serialize(Buffer::Iterator i) const
 {
@@ -189,8 +212,34 @@ RreqHeader::Serialize(Buffer::Iterator i) const
     i.WriteHtonU32(m_dstSeqNo);
     WriteTo(i, m_origin);
     i.WriteHtonU32(m_originSeqNo);
+
+    // InIds
+    uint32_t inLen = m_inIds.size();
+    i.WriteHtonU32(inLen);
+    for (uint32_t j = 0; j < inLen; j++)
+    {
+        WriteTo(i, m_inIds[j]);
+    }
+
+    // MetricBlocks
+    uint32_t blockLen = m_metricBlocks.size();
+    i.WriteHtonU32(blockLen);
+    for (const auto& block : m_metricBlocks)
+    {
+        WriteTo(i, block.owner);
+
+        uint32_t ticksLen = block.ticks.size();
+        i.WriteHtonU32(ticksLen);
+
+        for (const auto& tick : block.ticks)
+        {
+            WriteTo(i, tick.neighbor);
+            i.WriteHtonU32(tick.tick);
+        }
+    }
 }
 
+// 패킷 역직렬화
 uint32_t
 RreqHeader::Deserialize(Buffer::Iterator start)
 {
@@ -204,6 +253,34 @@ RreqHeader::Deserialize(Buffer::Iterator start)
     ReadFrom(i, m_origin);
     m_originSeqNo = i.ReadNtohU32();
 
+    uint32_t inLen = i.ReadNtohU32();
+    m_inIds.clear();
+
+    for (size_t j = 0; j < inLen; j++)
+    {
+        Ipv4Address inId;
+        ReadFrom(i, inId);
+        m_inIds.push_back(inId);
+    }
+
+    uint32_t blockLen = i.ReadNtohU32();
+    m_metricBlocks.clear();
+    for (size_t j = 0; j < blockLen; j++)
+    {
+        MetricBlock block;
+        ReadFrom(i, block.owner);
+
+        uint32_t ticksLen = i.ReadNtohU32();
+        for (size_t k = 0; k < ticksLen; k++)
+        {
+            NeighborTick tick;
+            ReadFrom(i, tick.neighbor);
+            tick.tick = i.ReadNtohU32();
+            block.ticks.push_back(tick);
+        }
+        m_metricBlocks.push_back(block);
+    }
+
     uint32_t dist = i.GetDistanceFrom(start);
     NS_ASSERT(dist == GetSerializedSize());
     return dist;
@@ -212,11 +289,47 @@ RreqHeader::Deserialize(Buffer::Iterator start)
 void
 RreqHeader::Print(std::ostream& os) const
 {
-    os << "RREQ ID " << m_requestID << " destination: ipv4 " << m_dst << " sequence number "
-       << m_dstSeqNo << " source: ipv4 " << m_origin << " sequence number " << m_originSeqNo
-       << " flags:"
-       << " Gratuitous RREP " << (*this).GetGratuitousRrep() << " Destination only "
-       << (*this).GetDestinationOnly() << " Unknown sequence number " << (*this).GetUnknownSeqno();
+    os << "RREQ id =" << m_requestID << " dst =" << m_dst << " origin =" << m_origin
+       << " hop =" << unsigned(m_hopCount);
+    os << "\n";
+    os << "IN_IDS = [";
+    for (const auto& id : m_inIds)
+    {
+        if (id == m_inIds.back())
+        {
+            os << id;
+        }
+        else
+        {
+            os << id << ",  ";
+        }
+    }
+    os << "]";
+    os << "\n";
+
+    os << "METRICS =";
+    os << " {";
+    os << "\n";
+    for (const auto& block : m_metricBlocks)
+    {
+        os << "             " << block.owner << " # -> [";
+        for (const auto& t : block.ticks)
+        {
+            os << t.neighbor << " - " << t.tick << "";
+            if (t.neighbor != block.ticks.back().neighbor)
+            {
+                os << ",  ";
+            }
+        }
+        os << "]";
+        if (&block != &m_metricBlocks.back())
+        {
+            os << "\n";
+        }
+    }
+    os << "\n";
+    os << "          }";
+    os << "\n";
 }
 
 std::ostream&
@@ -283,12 +396,120 @@ RreqHeader::GetUnknownSeqno() const
     return (m_flags & (1 << 3));
 }
 
+void
+RreqHeader::AppendInId(Ipv4Address inId)
+{
+    m_inIds.push_back(inId);
+}
+
+void
+RreqHeader::AppendMetricBlock(Ipv4Address owner, const std::vector<NeighborTick>& ticks)
+{
+    if (ticks.empty())
+    {
+        return;
+    }
+
+    MetricBlock block;
+    block.owner = owner;
+    block.ticks = ticks;
+    m_metricBlocks.push_back(block);
+}
+
+// upstream이 보내는 ticks 중에서 me와 관련된 tick만 남기고 나머지는 제거
+bool
+RreqHeader::PruneUpstreamMetricBlock(Ipv4Address upstreamOwner, Ipv4Address me)
+{
+    // metric block이 비어있는 경우
+    if (m_metricBlocks.empty())
+    {
+        NS_LOG_UNCOND("No metric block to prune for upstream " << upstreamOwner);
+        return false;
+    }
+
+    // 역순으로
+    for (auto it = m_metricBlocks.rbegin(); it != m_metricBlocks.rend(); ++it)
+    {
+        if (it->owner != upstreamOwner)
+            continue;
+
+        if (it->ticks.empty())
+        {
+            NS_LOG_UNCOND("ticks empty for upstream " << upstreamOwner);
+            return false;
+        }
+
+        for (const auto& t : it->ticks)
+        {
+            if (t.neighbor == me)
+            {
+                it->ticks = {t};
+                return true;
+            }
+        }
+
+        NS_LOG_UNCOND("No tick for me " << me << " in metric block for upstream " << upstreamOwner);
+        return false;
+    }
+
+    return false;
+}
+
+void
+RreqHeader::ForceSetUpstreamTick(Ipv4Address sender, Ipv4Address me, uint32_t tick)
+{
+    NeighborTick nt;
+    nt.neighbor = me;
+    nt.tick = tick;
+
+    for (auto it = m_metricBlocks.rbegin(); it != m_metricBlocks.rend(); ++it)
+    {
+        if (it->owner == sender)
+        {
+            NS_LOG_UNCOND("Print sender's origin ticks -> " << sender << "'s tick:  " << me << "->"
+                                                            << tick);
+            it->ticks.clear();
+            it->ticks.push_back(nt);
+            return;
+        }
+    }
+
+    MetricBlock mb;
+    mb.owner = sender;
+    mb.ticks = {nt};
+    m_metricBlocks.push_back(mb);
+}
+
 bool
 RreqHeader::operator==(const RreqHeader& o) const
 {
-    return (m_flags == o.m_flags && m_reserved == o.m_reserved && m_hopCount == o.m_hopCount &&
-            m_requestID == o.m_requestID && m_dst == o.m_dst && m_dstSeqNo == o.m_dstSeqNo &&
-            m_origin == o.m_origin && m_originSeqNo == o.m_originSeqNo);
+    if (!(m_flags == o.m_flags && m_reserved == o.m_reserved && m_hopCount == o.m_hopCount &&
+          m_requestID == o.m_requestID && m_dst == o.m_dst && m_dstSeqNo == o.m_dstSeqNo &&
+          m_origin == o.m_origin && m_originSeqNo == o.m_originSeqNo && m_inIds == o.m_inIds))
+    {
+        return false;
+    }
+
+    if (m_metricBlocks.size() != o.m_metricBlocks.size())
+        return false;
+
+    for (size_t i = 0; i < m_metricBlocks.size(); ++i)
+    {
+        if (m_metricBlocks[i].owner != o.m_metricBlocks[i].owner)
+            return false;
+
+        if (m_metricBlocks[i].ticks.size() != o.m_metricBlocks[i].ticks.size())
+            return false;
+
+        for (size_t j = 0; j < m_metricBlocks[i].ticks.size(); ++j)
+        {
+            if (m_metricBlocks[i].ticks[j].neighbor != o.m_metricBlocks[i].ticks[j].neighbor ||
+                m_metricBlocks[i].ticks[j].tick != o.m_metricBlocks[i].ticks[j].tick)
+                return false;
+        }
+    }
+
+    return true;
 }
 
 //-----------------------------------------------------------------------------
